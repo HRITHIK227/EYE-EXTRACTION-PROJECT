@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import joblib
 import pyautogui
+import time
 
 # Function to detect and crop eyes from a video frame
 def detect_and_crop_eyes(frame):
@@ -16,80 +17,37 @@ def detect_and_crop_eyes(frame):
     for (x, y, w, h) in eyes:
         eye_img = frame[y:y + h, x:x + w]
         cropped_eyes.append(eye_img)
-
     return cropped_eyes
 
-# Function to label and save eye images
-def label_and_save_eyes(output_dir, directions, segment_duration, video_capture):
-    frame_count = 0
-    current_direction = 0
-    
-    for direction in directions:
-        dir_path = os.path.join(output_dir, direction)
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
-
-    while True:
-        ret, frame = video_capture.read()
-        if not ret:
-            break
-
-        cropped_eyes = detect_and_crop_eyes(frame)
-
-        # Automatically label based on video segment
-        direction = directions[current_direction]
-        if frame_count > (current_direction + 1) * segment_duration:
-            current_direction += 1
-            if current_direction >= len(directions):
-                break  # Stop if all directions are processed
-
-        for eye_img in cropped_eyes:
-            eye_img_path = os.path.join(output_dir, direction, f'eye_{frame_count}.jpg')
-            cv2.imwrite(eye_img_path, eye_img)
-
-        frame_count += 1
-
-# Function to train the eye detection model
-def train_model(output_dir, directions):
-    label_mapping = {'left': 3, 'right': 4, 'up': 5, 'down': 6}
-    data, labels = [], []
-
-    for direction in directions:
-        direction_path = os.path.join(output_dir, direction)
-        for img_name in os.listdir(direction_path):
-            img_path = os.path.join(direction_path, img_name)
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            img = cv2.resize(img, (50, 50))  # Ensure images are resized to 50x50
-            data.append(img.flatten())
-            labels.append(label_mapping[direction])
-
-    data = np.array(data)
-    labels = np.array(labels)
-    X_train, X_test, y_train, y_test = train_test_split(data, labels, test_size=0.2, random_state=42)
-    model = SVC(kernel='linear')
-    model.fit(X_train, y_train)
-
-    # Predict the test set to evaluate the model
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    print(f'Model Accuracy: {accuracy * 100:.2f}%')
-
-    return model
-
-# Function to play the video, move the cursor, and display the direction
-def play_video_and_move_cursor(video_path, model):
+# Function to play the video, move the cursor, save cropped eyes, and display the direction
+def play_video_and_move_cursor(video_path, model, output_dir):
     video_capture = cv2.VideoCapture(video_path)
     label_mapping = {3: 'Left', 4: 'Right', 5: 'Up', 6: 'Down'}
+    
+    screen_width, screen_height = pyautogui.size()  # Get screen size
+    cursor_speed = 20  # Set cursor movement speed
 
+    # Resize video frames for faster processing
+    target_width, target_height = 320, 240  # Smaller size for the video
+
+    frame_count = 0  # Frame count for saving images
     while True:
         ret, frame = video_capture.read()
         if not ret:
             break
 
-        cropped_eyes = detect_and_crop_eyes(frame)
+        # Resize the video frame to a smaller size
+        frame_resized = cv2.resize(frame, (target_width, target_height))
+
+        cropped_eyes = detect_and_crop_eyes(frame_resized)
         direction_text = 'No Eye Detected'
 
         for eye_img in cropped_eyes:
+            # Save cropped eye image
+            eye_img_path = os.path.join(output_dir, f'eye_{frame_count}.jpg')
+            cv2.imwrite(eye_img_path, eye_img)
+
+            # Preprocess the image for prediction
             eye_img = cv2.cvtColor(eye_img, cv2.COLOR_BGR2GRAY)  # Convert to grayscale if not already
             eye_img = cv2.resize(eye_img, (50, 50))  # Resize to 50x50 pixels
             eye_img_flatten = eye_img.flatten().reshape(1, -1)
@@ -98,25 +56,32 @@ def play_video_and_move_cursor(video_path, model):
             prediction = model.predict(eye_img_flatten)
             direction = prediction[0]
 
-            # Move the cursor based on the predicted direction
+            # Move the cursor based on the predicted direction with smooth motion
             if direction == 3:  # Move cursor left
-                pyautogui.move(-10, 0)
+                pyautogui.move(-cursor_speed, 0, duration=0.1)
                 direction_text = 'Left'
             elif direction == 4:  # Move cursor right
-                pyautogui.move(10, 0)
+                pyautogui.move(cursor_speed, 0, duration=0.1)
                 direction_text = 'Right'
             elif direction == 5:  # Move cursor up
-                pyautogui.move(0, -10)
-                direction_text = 'Up'
+                pyautogui.move(0, -cursor_speed, duration=0.1)
             elif direction == 6:  # Move cursor down
-                pyautogui.move(0, 10)
+                pyautogui.move(0, cursor_speed, duration=0.1)
                 direction_text = 'Down'
 
-        # Overlay the direction text on the frame
-        cv2.putText(frame, f'Direction: {direction_text}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2,
-                    cv2.LINE_AA)
-        cv2.imshow('Eye Movement Detection', frame)
+            frame_count += 1  # Increment the frame counter
 
+        # Overlay the direction text on the frame
+        cv2.putText(frame_resized, f'Direction: {direction_text}', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1,
+                    cv2.LINE_AA)
+
+        # Show the resized frame in a small OpenCV window
+        cv2.imshow('Eye Movement Detection (Small)', frame_resized)
+
+        # Position the window to the top-left corner
+        cv2.moveWindow('Eye Movement Detection (Small)', 0, 0)
+
+        # Exit condition for video
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
@@ -124,20 +89,15 @@ def play_video_and_move_cursor(video_path, model):
     cv2.destroyAllWindows()
 
 # Main execution
-video_path = r"C:\Users\91849\OneDrive\Desktop\WhatsApp Video .mp4"
-output_dir = r"C:\Users\91849\OneDrive\Desktop\output eye tracking image"
-directions = ['left', 'right', 'up', 'down']
+video_path = r"C:\Users\91849\OneDrive\Desktop\Desktop\ds project.mp4"  # Change the path to your video
+output_dir = r"C:\Users\91849\OneDrive\Desktop\output_eye_tracking_image"  # Output folder for saved eye images
 
-# Initialize video capture and calculate segment duration
-video_capture = cv2.VideoCapture(video_path)
-segment_duration = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT)) // len(directions)
+# Ensure output directory exists
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
 
-# Label and save eye images
-label_and_save_eyes(output_dir, directions, segment_duration, video_capture)
-
-# Train the model
-model = train_model(output_dir, directions)
-joblib.dump(model, 'eye_direction_model.joblib')
+# Load the pre-trained model (ensure the model file exists)
+model = joblib.load('eye_direction_model.joblib')
 
 # Play the video and move the cursor based on detected eye movements
-play_video_and_move_cursor(video_path, model)
+play_video_and_move_cursor(video_path, model, output_dir)
